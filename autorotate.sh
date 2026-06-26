@@ -95,12 +95,12 @@ apply_rotation() {
             matrix="1 0 0 0 1 0 0 0 1"
             ;;
         left-up)
-            rot="right"
-            matrix="0 1 0 -1 0 1 0 0 1"
-            ;;
-        right-up)
             rot="left"
             matrix="0 -1 1 1 0 0 0 0 1"
+            ;;
+        right-up)
+            rot="right"
+            matrix="0 1 0 -1 0 1 0 0 1"
             ;;
         bottom-up)
             rot="inverted"
@@ -137,37 +137,24 @@ echo "Wacom devices: ${WACOM[*]:-none found}"
 echo "Pause with: touch $LOCKFILE   Resume with: rm $LOCKFILE"
 
 LAST=""
-PENDING=""
-PENDING_SINCE=0
-# debounce: orientation must stay stable this many seconds before applying
-DEBOUNCE=1
 
-monitor-sensor 2>&1 | while read -r line; do
+# stdbuf forces line-buffered output; without it monitor-sensor buffers its
+# output and the pipe receives nothing until a large chunk accumulates.
+#
+# Note: monitor-sensor emits a line only WHEN the orientation changes, not
+# continuously, so we act on each change immediately rather than waiting for a
+# repeated reading (there won't be one while the device sits still).
+stdbuf -oL -eL monitor-sensor 2>&1 | while read -r line; do
     # skip while paused
     [ -f "$LOCKFILE" ] && continue
 
-    if [[ "$line" =~ Accelerometer\ orientation\ changed:\ (.+) ]]; then
+    if [[ "$line" =~ orientation\ changed:\ ([a-z-]+) ]]; then
         new="${BASH_REMATCH[1]}"
 
-        # ignore undefined readings
+        # ignore undefined readings and no-op repeats
         [ "$new" = "undefined" ] && continue
-
-        # already in this orientation, nothing to do
         [ "$new" = "$LAST" ] && continue
 
-        now=$(date +%s)
-
-        if [ "$new" != "$PENDING" ]; then
-            # new candidate orientation, start the debounce timer
-            PENDING="$new"
-            PENDING_SINCE=$now
-            continue
-        fi
-
-        # same candidate as before - has it been stable long enough?
-        if (( now - PENDING_SINCE >= DEBOUNCE )); then
-            apply_rotation "$PENDING"
-            LAST="$PENDING"
-        fi
+        apply_rotation "$new" && LAST="$new"
     fi
 done
