@@ -56,8 +56,14 @@ monitor-sensor
 ```bash
 git clone https://github.com/pastelrx/lifebook-autorotate.git
 cd lifebook-autorotate
-chmod +x autorotate.sh
+./install.sh
 ```
+
+`install.sh` is idempotent and does everything below for you: installs missing
+dependencies, adds you to the `input` group, symlinks the script onto your PATH,
+enables the systemd user service, and configures Onboard (if installed). If it
+adds you to `input`, **reboot** afterwards (see step 1). `./uninstall.sh` reverses
+it. Prefer to do it by hand? The manual steps:
 
 **1. Join the `input` group** (so the script can read the tablet switch), then
 **reboot** — a relogin alone isn't always enough, because the long-running
