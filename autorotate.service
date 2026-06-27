@@ -1,18 +1,25 @@
 [Unit]
-Description=Auto-rotate screen and Wacom input based on accelerometer
+Description=Auto-rotate screen and Wacom input based on tablet mode + accelerometer
 Documentation=https://github.com/pastelrx/lifebook-autorotate
 After=graphical-session.target
-PartOf=graphical-session.target
+# Keep retrying until X is ready instead of giving up after a few fast failures.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-# Edit this path to point at wherever you cloned the repo:
-ExecStart=%h/lifebook-autorotate/autorotate.sh
+# Runs the script via the symlink the README's install step drops into ~/.local/bin.
+# (Point this at your clone directly if you prefer, e.g. %h/lifebook-autorotate/autorotate.sh)
+ExecStart=%h/.local/bin/autorotate.sh
+# X11 access. systemd --user usually imports these from the running session, but
+# set them explicitly so the service also works if it starts before that import.
+# Change DISPLAY if yours isn't :0.
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=%h/.Xauthority
+# If the script starts before X is up, xrandr fails and it exits; we just retry.
 Restart=on-failure
 RestartSec=3
-# The script needs the X display; these are usually inherited in a user
-# session, but set them explicitly if the service can't reach X:
-# Environment=DISPLAY=:0
 
 [Install]
-WantedBy=graphical-session.target
+# graphical-session.target is often inactive on XFCE, so bind to default.target
+# (reached when the user systemd instance starts at login) to actually autostart.
+WantedBy=default.target
