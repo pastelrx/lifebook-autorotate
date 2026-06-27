@@ -227,13 +227,21 @@ axis only, flip the sign on the relevant matrix entries.
 - **Onboard pops up in laptop mode too** — `tablet-mode-state-file` isn't set, or
   the script isn't running to update it. Confirm `cat $XDG_RUNTIME_DIR/tablet-mode`
   flips between `0` and `1` as you fold/unfold.
+- **Pen cursor is offset from the tip after rotation, but touch is fine** — the
+  matrix landed on the wrong node. A Wacom pen exposes a *pointer* node (the
+  stylus, e.g. `… Pen Pen`) and a separate *keyboard* node for its barrel buttons
+  (e.g. `… Pen`); matching by name is ambiguous and can hit the button node. The
+  script avoids this by transforming Wacom *slave pointer* nodes by numeric id
+  (`wacom_pointer_ids`). If a pen still mis-tracks, it's the matrix *value* for
+  that orientation — recalibrate per "Calibrating the rotation matrices".
 
 ## Notes
 
 - Wayland is not supported; there the compositor handles rotation and tablet
   mapping itself (GNOME does this natively).
-- The `Coordinate Transformation Matrix` property only exists on absolute input
-  devices (pen/touch); regular mice are skipped.
+- The `Coordinate Transformation Matrix` is applied only to Wacom *slave pointer*
+  nodes (pen + touch), by id; the pen's button (keyboard) node and the regular
+  touchpad are left alone.
 - Input hardware is re-detected each time the script starts, so adding/removing
   devices needs no config change.
 
