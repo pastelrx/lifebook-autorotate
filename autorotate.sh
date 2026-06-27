@@ -26,9 +26,19 @@ if [ -z "$DISPLAY_NAME" ]; then
     exit 1
 fi
 
-# --- detect Wacom devices automatically ---------------------------------------
-# Grabs every xinput device with "Wacom" in the name so we don't hardcode IDs.
-mapfile -t WACOM < <(xinput list --name-only 2>/dev/null | grep -i "wacom")
+# --- detect Wacom pointer devices automatically -------------------------------
+# We transform ONLY the pen/touch POINTER nodes. The pen also exposes a separate
+# *keyboard* node for its barrel buttons, and xinput name-matching is ambiguous
+# between "...Pen" (that keyboard node) and "...Pen Pen" (the actual stylus
+# pointer): matching by name lands the matrix on the wrong node, so the pen stays
+# untransformed (cursor offset from the tip) while touch works. We target the
+# numeric ids of Wacom *slave pointer* devices instead. Re-resolved on each
+# rotation so suspend/replug can't leave us writing to a stale id. The regular
+# touchpad has no "Wacom" in its name and is left alone.
+wacom_pointer_ids() {
+    xinput list 2>/dev/null | grep -i wacom | grep -iE 'slave +pointer' \
+        | grep -oE 'id=[0-9]+' | cut -d= -f2
+}
 
 # --- pull off-screen windows back into view -----------------------------------
 # When the resolution changes (landscape <-> portrait), windows that were near
@@ -113,8 +123,9 @@ apply_rotation() {
 
     xrandr --output "$DISPLAY_NAME" --rotate "$rot"
 
-    for dev in "${WACOM[@]}"; do
-        xinput set-prop "$dev" "Coordinate Transformation Matrix" $matrix 2>/dev/null
+    local id
+    for id in $(wacom_pointer_ids); do
+        xinput set-prop "$id" "Coordinate Transformation Matrix" $matrix 2>/dev/null
     done
 
     # give X a moment to settle on the new resolution, then rescue stray windows
@@ -241,7 +252,7 @@ handle_switch() {
 
 # --- continuous mode ----------------------------------------------------------
 echo "Auto-rotate running. Display: $DISPLAY_NAME"
-echo "Wacom devices: ${WACOM[*]:-none found}"
+echo "Wacom pointer ids: $(wacom_pointer_ids | tr '\n' ' ')"
 if [ "$GATING" = "1" ]; then
     echo "Tablet-mode gating: ON (switch: $SWITCH_DEV, currently $([ "$TABLET" = 1 ] && echo tablet || echo laptop))"
 else
