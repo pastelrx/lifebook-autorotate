@@ -140,6 +140,25 @@ gsettings set org.onboard.auto-show tablet-mode-detection-enabled true
 gsettings set org.gnome.desktop.interface toolkit-accessibility true
 ```
 
+Onboard must be **running** for auto-show to work, so start it with your session.
+If the packaged `/etc/xdg/autostart/onboard-autostart.desktop` doesn't fire on
+your DE (it has a GNOME-only condition), drop a user override that runs it
+unconditionally, and start it minimized so it doesn't flash at login:
+
+```bash
+mkdir -p ~/.config/autostart
+cat > ~/.config/autostart/onboard-autostart.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Onboard
+Exec=onboard
+Icon=onboard
+Terminal=false
+X-GNOME-Autostart-enabled=true
+EOF
+gsettings set org.onboard start-minimized true
+```
+
 The state-file path defaults to `$XDG_RUNTIME_DIR/tablet-mode`; override with
 `AUTOROTATE_TABLET_STATE_FILE`. Auto-show needs the AT-SPI bus running — on a
 non-GNOME session like XFCE this is normally fine after a clean login; if Onboard
