@@ -94,7 +94,7 @@ apply_rotation() {
             rot="normal"
             matrix="1 0 0 0 1 0 0 0 1"
             ;;
-        left-up)
+	left-up)
             rot="left"
             matrix="0 -1 1 1 0 0 0 0 1"
             ;;
@@ -131,30 +131,136 @@ if [ -n "$1" ]; then
     exit 0
 fi
 
+# --- tablet-mode gating -------------------------------------------------------
+# In laptop mode the screen should NOT follow the accelerometer (you don't want
+# it flipping while typing on the physical keyboard). We only rotate when the
+# convertible is folded into tablet mode, reported by SW_TABLET_MODE on the
+# "Intel HID switches" input device.
+#
+# Set AUTOROTATE_REQUIRE_TABLET=0 to disable gating and always rotate (e.g. on
+# hardware without a tablet switch).
+
+REQUIRE_TABLET="${AUTOROTATE_REQUIRE_TABLET:-1}"
+
+# State file consumed by onboard's built-in tablet-mode detection
+# (org.onboard.auto-show tablet-mode-state-file). We write "1" in tablet mode
+# and "0" in laptop mode; onboard's tablet-mode-state-file-pattern ('1') matches
+# only the tablet value, so onboard auto-shows on input focus ONLY in tablet
+# mode. Lives on tmpfs in the user runtime dir.
+STATE_FILE="${AUTOROTATE_TABLET_STATE_FILE:-${XDG_RUNTIME_DIR:-/tmp}/tablet-mode}"
+
+write_tablet_state() {
+    printf '%s\n' "$1" > "$STATE_FILE" 2>/dev/null
+}
+
+# Locate the input event device that carries SW_TABLET_MODE. We parse
+# /proc/bus/input/devices in paragraph mode and pick the block whose switch
+# bitmask (B: SW=) has bit 1 (SW_TABLET_MODE = 2) set, then read its eventN
+# handler. This survives eventN renumbering across boots.
+find_switch_dev() {
+    awk '
+        BEGIN { RS=""; FS="\n" }
+        {
+            ev=""; sw=0
+            for (i = 1; i <= NF; i++) {
+                if ($i ~ /^H: Handlers=/ && match($i, /event[0-9]+/))
+                    ev = substr($i, RSTART, RLENGTH)
+                if ($i ~ /^B: SW=/) { v = $i; sub(/^B: SW=/, "", v); sw = strtonum("0x" v) }
+            }
+            if (ev != "" && and(sw, 2)) { print "/dev/input/" ev; exit }
+        }' /proc/bus/input/devices
+}
+
+# Read the CURRENT tablet state (not an event): evtest --query exits 10 when the
+# switch is active, 0 when inactive. Any other (error) code -> assume laptop.
+read_tablet_state() {
+    [ -n "$SWITCH_DEV" ] || { echo 0; return; }
+    evtest --query "$SWITCH_DEV" EV_SW SW_TABLET_MODE >/dev/null 2>&1
+    [ "$?" = "10" ] && echo 1 || echo 0
+}
+
+SWITCH_DEV=$(find_switch_dev)
+
+if [ "$REQUIRE_TABLET" = "1" ] && [ -n "$SWITCH_DEV" ] && [ -r "$SWITCH_DEV" ]; then
+    GATING=1
+    TABLET=$(read_tablet_state)
+    write_tablet_state "$TABLET"      # seed onboard's state file at startup
+else
+    GATING=0
+    TABLET=1            # treat as always-in-tablet -> legacy always-rotate
+    if [ "$REQUIRE_TABLET" = "1" ] && [ -n "$SWITCH_DEV" ] && [ ! -r "$SWITCH_DEV" ]; then
+        echo "WARNING: $SWITCH_DEV not readable; tablet-mode gating disabled." >&2
+        echo "         Add your user to the 'input' group and re-login:" >&2
+        echo "             sudo gpasswd -a $USER input" >&2
+        echo "         Until then the screen rotates regardless of tablet mode." >&2
+    fi
+    SWITCH_DEV=""       # don't start the switch watcher
+fi
+
+# --- rotation handlers --------------------------------------------------------
+LAST_ACCEL=""          # latest orientation seen (tracked even in laptop mode)
+LAST_APPLIED=""        # last orientation actually applied (dedup)
+
+handle_accel() {
+    local new="$1"
+    [ "$new" = "undefined" ] && return
+    LAST_ACCEL="$new"
+    [ "$TABLET" = "1" ] || return            # ignore tilt in laptop mode
+    [ "$new" = "$LAST_APPLIED" ] && return
+    apply_rotation "$new" && LAST_APPLIED="$new"
+}
+
+handle_switch() {
+    write_tablet_state "$1"           # let onboard gate its auto-show
+    if [ "$1" = "1" ]; then
+        TABLET=1
+        echo "tablet mode ON"
+        # No fresh accel event fires on the fold itself, so apply the current
+        # known orientation now.
+        if [ -n "$LAST_ACCEL" ] && [ "$LAST_ACCEL" != "$LAST_APPLIED" ]; then
+            apply_rotation "$LAST_ACCEL" && LAST_APPLIED="$LAST_ACCEL"
+        fi
+    else
+        TABLET=0
+        echo "tablet mode OFF -> normal"
+        if [ "$LAST_APPLIED" != "normal" ]; then
+            apply_rotation normal && LAST_APPLIED="normal"
+        fi
+    fi
+}
+
 # --- continuous mode ----------------------------------------------------------
 echo "Auto-rotate running. Display: $DISPLAY_NAME"
 echo "Wacom devices: ${WACOM[*]:-none found}"
+if [ "$GATING" = "1" ]; then
+    echo "Tablet-mode gating: ON (switch: $SWITCH_DEV, currently $([ "$TABLET" = 1 ] && echo tablet || echo laptop))"
+else
+    echo "Tablet-mode gating: OFF (rotating on every orientation change)"
+fi
 echo "Pause with: touch $LOCKFILE   Resume with: rm $LOCKFILE"
 
-LAST=""
-
-# stdbuf forces line-buffered output; without it monitor-sensor buffers its
-# output and the pipe receives nothing until a large chunk accumulates.
+# stdbuf + sed -u force line-buffering end to end; without it monitor-sensor and
+# evtest buffer their output and the pipe stalls until a large chunk accumulates.
+#
+# Both event sources are merged into one loop with a tag prefix (ACCEL / SWITCH)
+# so a single reader handles orientation changes AND tablet-mode transitions
+# without a second process or a shared state file.
 #
 # Note: monitor-sensor emits a line only WHEN the orientation changes, not
-# continuously, so we act on each change immediately rather than waiting for a
-# repeated reading (there won't be one while the device sits still).
-stdbuf -oL -eL monitor-sensor 2>&1 | while read -r line; do
+# continuously, so we act on each change immediately.
+{
+    stdbuf -oL -eL monitor-sensor 2>&1 | sed -u 's/^/ACCEL /' &
+    [ -n "$SWITCH_DEV" ] && stdbuf -oL -eL evtest "$SWITCH_DEV" 2>/dev/null | sed -u 's/^/SWITCH /' &
+} | while read -r tag rest; do
     # skip while paused
     [ -f "$LOCKFILE" ] && continue
 
-    if [[ "$line" =~ orientation\ changed:\ ([a-z-]+) ]]; then
-        new="${BASH_REMATCH[1]}"
-
-        # ignore undefined readings and no-op repeats
-        [ "$new" = "undefined" ] && continue
-        [ "$new" = "$LAST" ] && continue
-
-        apply_rotation "$new" && LAST="$new"
-    fi
+    case "$tag" in
+        ACCEL)
+            [[ "$rest" =~ orientation\ changed:\ ([a-z-]+) ]] && handle_accel "${BASH_REMATCH[1]}"
+            ;;
+        SWITCH)
+            [[ "$rest" =~ SW_TABLET_MODE\),\ value\ ([0-9]+) ]] && handle_switch "${BASH_REMATCH[1]}"
+            ;;
+    esac
 done
