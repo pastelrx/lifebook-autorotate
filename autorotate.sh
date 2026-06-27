@@ -179,7 +179,17 @@ read_tablet_state() {
     [ "$?" = "10" ] && echo 1 || echo 0
 }
 
+# At boot (as a service) we can start before udev has created and permissioned
+# the switch device, which would make us fall back to legacy mode for the whole
+# session. Wait briefly for it to appear AND become readable before deciding.
 SWITCH_DEV=$(find_switch_dev)
+if [ "$REQUIRE_TABLET" = "1" ]; then
+    for _ in $(seq 1 30); do
+        [ -n "$SWITCH_DEV" ] && [ -r "$SWITCH_DEV" ] && break
+        sleep 0.5
+        SWITCH_DEV=$(find_switch_dev)
+    done
+fi
 
 if [ "$REQUIRE_TABLET" = "1" ] && [ -n "$SWITCH_DEV" ] && [ -r "$SWITCH_DEV" ]; then
     GATING=1
